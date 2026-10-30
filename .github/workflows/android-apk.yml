@@ -10,9 +10,6 @@ permissions:
 
 jobs:
   build:
-    # Use the Android SDK already installed on the GitHub-hosted runner.
-    # Do NOT use android-actions/setup-android here: it may try to install
-    # the obsolete "tools" package, which causes "Failed to find package 'tools'".
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -31,6 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
@@ -42,34 +40,40 @@ jobs:
 
           SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1 || true)"
           if [[ -z "$SDKMANAGER" ]]; then
-            echo "ERROR: sdkmanager is missing from the runner's preinstalled Android SDK."
-            find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print || true
+            echo "ERROR: sdkmanager not found under $SDK_ROOT/cmdline-tools"
             exit 1
           fi
 
-          echo "Using: $SDKMANAGER"
+          echo "Using sdkmanager: $SDKMANAGER"
           "$SDKMANAGER" --version
 
-          # Accept licenses without invoking setup-android or installing the
-          # obsolete standalone 'tools' package.
+          # IMPORTANT: disable BOTH errexit and pipefail around yes|sdkmanager.
+          # Otherwise bash may exit on a non-zero pipeline status before we can
+          # inspect sdkmanager's own exit code (and yes may receive SIGPIPE).
+          set +e
           set +o pipefail
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
           LICENSE_STATUS=${PIPESTATUS[1]}
+          set -e
           set -o pipefail
+
           if [[ "$LICENSE_STATUS" -ne 0 ]]; then
-            echo "ERROR: Android SDK license acceptance failed ($LICENSE_STATUS)"
+            echo "ERROR: sdkmanager --licenses failed with exit code $LICENSE_STATUS"
             exit "$LICENSE_STATUS"
           fi
 
+          set +e
           set +o pipefail
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0"
           INSTALL_STATUS=${PIPESTATUS[1]}
+          set -e
           set -o pipefail
+
           if [[ "$INSTALL_STATUS" -ne 0 ]]; then
-            echo "ERROR: Android SDK package installation failed ($INSTALL_STATUS)"
+            echo "ERROR: sdkmanager --install failed with exit code $INSTALL_STATUS"
             exit "$INSTALL_STATUS"
           fi
 
