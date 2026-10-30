@@ -24,58 +24,52 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Locate and prepare preinstalled Android SDK
+      # GitHub's Ubuntu runner image already contains the Android SDK and its
+      # accepted license files. Do not run `sdkmanager --licenses` here: on
+      # some runner images that command exits 1 even after printing licenses.
+      - name: Locate and verify preinstalled Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-
           if [[ ! -d "$SDK_ROOT" ]]; then
             echo "ERROR: Android SDK directory not found: $SDK_ROOT"
             exit 1
           fi
 
-          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1 || true)"
-          if [[ -z "$SDKMANAGER" ]]; then
-            echo "ERROR: sdkmanager not found under $SDK_ROOT/cmdline-tools"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "Using Android SDK: $SDK_ROOT"
+
+          REQUIRED_DIRS=(
+            "$SDK_ROOT/platform-tools"
+            "$SDK_ROOT/platforms/android-36"
+            "$SDK_ROOT/build-tools/36.0.0"
+          )
+
+          MISSING=()
+          for dir in "${REQUIRED_DIRS[@]}"; do
+            if [[ ! -d "$dir" ]]; then
+              MISSING+=("$dir")
+            fi
+          done
+
+          if (( ${#MISSING[@]} > 0 )); then
+            echo "ERROR: Required Android SDK packages are missing:"
+            printf ' - %s\n' "${MISSING[@]}"
+            echo "Installed SDK packages on this runner:"
+            find "$SDK_ROOT" -maxdepth 3 -type d \( -path '*/platforms/*' -o -path '*/build-tools/*' \) | sort || true
+            echo "SDK license files present:"
+            if [[ -d "$SDK_ROOT/licenses" ]]; then
+              find "$SDK_ROOT/licenses" -maxdepth 1 -type f -printf '%f\n' | sort
+            else
+              echo "No licenses directory found"
+            fi
             exit 1
           fi
 
-          echo "Using sdkmanager: $SDKMANAGER"
-          "$SDKMANAGER" --version
-
-          # IMPORTANT: disable BOTH errexit and pipefail around yes|sdkmanager.
-          # Otherwise bash may exit on a non-zero pipeline status before we can
-          # inspect sdkmanager's own exit code (and yes may receive SIGPIPE).
-          set +e
-          set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
-          LICENSE_STATUS=${PIPESTATUS[1]}
-          set -e
-          set -o pipefail
-
-          if [[ "$LICENSE_STATUS" -ne 0 ]]; then
-            echo "ERROR: sdkmanager --licenses failed with exit code $LICENSE_STATUS"
-            exit "$LICENSE_STATUS"
-          fi
-
-          set +e
-          set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
-          INSTALL_STATUS=${PIPESTATUS[1]}
-          set -e
-          set -o pipefail
-
-          if [[ "$INSTALL_STATUS" -ne 0 ]]; then
-            echo "ERROR: sdkmanager --install failed with exit code $INSTALL_STATUS"
-            exit "$INSTALL_STATUS"
-          fi
+          echo "Android SDK packages required by this project are present."
 
       - name: Verify Android project files
         run: |
