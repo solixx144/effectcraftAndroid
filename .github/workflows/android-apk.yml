@@ -24,22 +24,47 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Prepare Android SDK and accept licenses
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages and accept licenses
         shell: bash
         run: |
           set -euo pipefail
-          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "Using Android SDK at: $SDK_ROOT"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT"
           SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
-          if [ -z "$SDKMANAGER" ]; then
-            echo "sdkmanager was not found under $SDK_ROOT/cmdline-tools"
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "ERROR: sdkmanager not found under $SDK_ROOT/cmdline-tools"
+            find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print || true
             exit 1
           fi
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" --install \
+          echo "Using sdkmanager: $SDKMANAGER"
+          "$SDKMANAGER" --version
+
+          # Accept all available SDK licenses. Some runner images print lengthy
+          # license text; feed affirmative responses explicitly.
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
+          LICENSE_STATUS=${PIPESTATUS[1]}
+          set -o pipefail
+          if [[ "$LICENSE_STATUS" -ne 0 ]]; then
+            echo "License acceptance returned $LICENSE_STATUS; continuing to package install for diagnostics."
+          fi
+
+          # Pipe acceptance to install as well, in case a package license is
+          # newly presented during installation.
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --verbose --install \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0"
+          INSTALL_STATUS=${PIPESTATUS[1]}
+          set -o pipefail
+          if [[ "$INSTALL_STATUS" -ne 0 ]]; then
+            echo "ERROR: sdkmanager package installation failed with exit code $INSTALL_STATUS"
+            exit "$INSTALL_STATUS"
+          fi
 
       - name: Verify Android module directory
         run: test -f android/app/build.gradle.kts
