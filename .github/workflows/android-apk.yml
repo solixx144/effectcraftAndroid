@@ -10,7 +10,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Use the Android SDK already installed on the GitHub-hosted runner.
+    # Do NOT use android-actions/setup-android here: it may try to install
+    # the obsolete "tools" package, which causes "Failed to find package 'tools'".
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -24,50 +27,56 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages and accept licenses
+      - name: Locate and prepare preinstalled Android SDK
         shell: bash
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          echo "ANDROID_HOME=$SDK_ROOT"
-          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+          if [[ ! -d "$SDK_ROOT" ]]; then
+            echo "ERROR: Android SDK directory not found: $SDK_ROOT"
+            exit 1
+          fi
+
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1 || true)"
           if [[ -z "$SDKMANAGER" ]]; then
-            echo "ERROR: sdkmanager not found under $SDK_ROOT/cmdline-tools"
+            echo "ERROR: sdkmanager is missing from the runner's preinstalled Android SDK."
             find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print || true
             exit 1
           fi
-          echo "Using sdkmanager: $SDKMANAGER"
+
+          echo "Using: $SDKMANAGER"
           "$SDKMANAGER" --version
 
-          # Accept all available SDK licenses. Some runner images print lengthy
-          # license text; feed affirmative responses explicitly.
+          # Accept licenses without invoking setup-android or installing the
+          # obsolete standalone 'tools' package.
           set +o pipefail
           yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
           LICENSE_STATUS=${PIPESTATUS[1]}
           set -o pipefail
           if [[ "$LICENSE_STATUS" -ne 0 ]]; then
-            echo "License acceptance returned $LICENSE_STATUS; continuing to package install for diagnostics."
+            echo "ERROR: Android SDK license acceptance failed ($LICENSE_STATUS)"
+            exit "$LICENSE_STATUS"
           fi
 
-          # Pipe acceptance to install as well, in case a package license is
-          # newly presented during installation.
           set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --verbose --install \
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0"
           INSTALL_STATUS=${PIPESTATUS[1]}
           set -o pipefail
           if [[ "$INSTALL_STATUS" -ne 0 ]]; then
-            echo "ERROR: sdkmanager package installation failed with exit code $INSTALL_STATUS"
+            echo "ERROR: Android SDK package installation failed ($INSTALL_STATUS)"
             exit "$INSTALL_STATUS"
           fi
 
-      - name: Verify Android module directory
-        run: test -f android/app/build.gradle.kts
+      - name: Verify Android project files
+        run: |
+          test -f settings.gradle.kts
+          test -f android/app/build.gradle.kts
 
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
